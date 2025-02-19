@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
@@ -11,18 +12,50 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# .env dosyasından TOKEN'ı yükle
+# .env dosyasından değişkenleri yükle
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
+INSTAGRAM_USERNAME = os.getenv('INSTAGRAM_USERNAME')
+INSTAGRAM_PASSWORD = os.getenv('INSTAGRAM_PASSWORD')
+
+def is_tiktok_url(url: str) -> bool:
+    return 'tiktok.com' in url.lower()
 
 # Video indirme fonksiyonu
 async def download_video(url: str) -> str:
-    ydl_opts = {
+    base_opts = {
         'format': 'best',
         'outtmpl': '%(title)s.%(ext)s',
         'no_warnings': True,
-        'quiet': True
+        'quiet': True,
     }
+    
+    if is_tiktok_url(url):
+        # TikTok için özel ayarlar
+        ydl_opts = {
+            **base_opts,
+            'format': 'best',
+            'cookiesfrombrowser': ('chrome',),  # Tarayıcıdan çerezleri al
+            'extractor_args': {
+                'tiktok': {
+                    'embed_url': True,
+                    'api_hostname': 'api16-normal-c-useast1a.tiktokv.com',
+                    'app_version': '1.0.0',
+                    'use_api': True
+                }
+            }
+        }
+    else:
+        # Diğer platformlar için ayarlar
+        ydl_opts = {
+            **base_opts,
+            'username': INSTAGRAM_USERNAME,
+            'password': INSTAGRAM_PASSWORD,
+            'cookiefile': 'cookies.txt',
+            'extract_flat': False,
+            'mark_watched': False,
+            'ignoreerrors': False
+        }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -30,6 +63,10 @@ async def download_video(url: str) -> str:
             return f"{info['title']}.{info['ext']}"
     except Exception as e:
         logging.error(f"Video indirme hatası: {str(e)}")
+        if "login required" in str(e).lower():
+            raise Exception("Instagram girişi gerekiyor. Lütfen bot yöneticisiyle iletişime geçin.")
+        elif "Unable to extract sigi state" in str(e):
+            raise Exception("TikTok video indirme hatası. Alternatif yöntem deneniyor...")
         raise e
 
 # Başlangıç komutu
@@ -60,7 +97,12 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.remove(video_path)
         
     except Exception as e:
-        await message.reply_text(f"Üzgünüm, bir hata oluştu: {str(e)}")
+        error_msg = str(e)
+        if "TikTok video indirme hatası" in error_msg:
+            await message.reply_text("TikTok videosunu indirirken bir sorun oluştu. "
+                                   "Lütfen videonun herkese açık olduğundan emin olun.")
+        else:
+            await message.reply_text(f"Üzgünüm, bir hata oluştu: {error_msg}")
 
 def main():
     # Bot uygulamasını oluştur
